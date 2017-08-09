@@ -19,9 +19,9 @@ def data_dir(tmpdir):
 def test_init():
     model = deepometry.model.Model(shape=(48, 48, 3), units=4)
 
-    assert model.model.input.shape.as_list() == [None, 48, 48, 3]
+    assert keras.backend.int_shape(model.model.input) == (None, 48, 48, 3)
 
-    assert model.model.output.shape.as_list() == [None, 4]
+    assert keras.backend.int_shape(model.model.output) == (None, 4)
 
 
 def test_compile():
