@@ -11,21 +11,28 @@ import deepometry.image.generator
 
 
 class Model(object):
-    def __init__(self, shape, units):
+    def __init__(self, name, shape, units):
         """
         Create a model for single-cell image classification.
 
+        :param name: Name of model used for identification.
         :param shape: Input image shape, including channels. Grayscale data should specify channels as 1. Check your
                       keras configuration for channel order (e.g., "image_data_format": "channels_last"). Usually,
                       this configuration is defined at `$HOME/.keras/keras.json`, or `%USERPROFILE%\.keras\keras.json`
                       on Windows.
         :param units: Number of predictable classes.
         """
+        self.name = name
+
         self.units = units
 
         x = keras.layers.Input(shape)
 
         self.model = keras_resnet.models.ResNet50(x, classes=units)
+
+        model_dir = pkg_resources.resource_filename("deepometry", os.path.join("data", self.name))
+        if not os.path.exists(model_dir):
+            os.mkdir(model_dir)
 
     def compile(self):
         """
@@ -51,10 +58,12 @@ class Model(object):
         :param verbose: Verbosity mode, 0 = silent, or 1 = verbose.
         :return: Tuple of scalars: (loss, accuracy).
         """
-        self.model.load_weights(pkg_resources.resource_filename("deepometry", os.path.join("data", "checkpoint.hdf5")))
+        self.model.load_weights(
+            pkg_resources.resource_filename("deepometry", os.path.join("data", self.name, "checkpoint.hdf5"))
+        )
 
         return self.model.evaluate(
-            x=_center(x),
+            x=self._center(x),
             y=keras.utils.to_categorical(y, num_classes=self.units),
             batch_size=batch_size,
             verbose=verbose
@@ -72,22 +81,22 @@ class Model(object):
         :param validation_split: Fraction of the training data to be used as validation data.
         :param verbose: Verbosity mode. 0 = silent, 1 = verbose, 2 = one log line per epoch.
         """
-        x_train, y_train, x_valid, y_valid = _split(x, y, validation_split)
+        x_train, y_train, x_valid, y_valid = self._split(x, y, validation_split)
 
-        _calculate_means(x_train)
+        self._calculate_means(x_train)
 
-        train_generator = _create_generator()
+        train_generator = self._create_generator()
 
-        valid_generator = _create_generator()
+        valid_generator = self._create_generator()
 
         options = {
             "callbacks": [
                 keras.callbacks.CSVLogger(
-                    pkg_resources.resource_filename("deepometry", os.path.join("data", "training.csv"))
+                    pkg_resources.resource_filename("deepometry", os.path.join("data", self.name, "training.csv"))
                 ),
                 keras.callbacks.EarlyStopping(patience=20),
                 keras.callbacks.ModelCheckpoint(
-                    pkg_resources.resource_filename("deepometry", os.path.join("data", "checkpoint.hdf5"))
+                    pkg_resources.resource_filename("deepometry", os.path.join("data", self.name, "checkpoint.hdf5"))
                 ),
                 keras.callbacks.ReduceLROnPlateau()
             ],
@@ -122,72 +131,77 @@ class Model(object):
         :param verbose: Verbosity mode, 0 = silent, or 1 = verbose.
         :return: NumPy array of predictions.
         """
-        self.model.load_weights(pkg_resources.resource_filename("deepometry", os.path.join("data", "checkpoint.hdf5")))
+        self.model.load_weights(
+            pkg_resources.resource_filename(
+                "deepometry",
+                os.path.join("data", self.name, "checkpoint.hdf5")
+            )
+        )
 
-        return self.model.predict(_center(x), batch_size=batch_size, verbose=verbose)
+        return self.model.predict(self._center(x), batch_size=batch_size, verbose=verbose)
 
+    def _calculate_means(self, x):
+        reshaped = x.reshape(-1, x.shape[-1])
 
-def _calculate_means(x):
-    reshaped = x.reshape(-1, x.shape[-1])
+        means = numpy.mean(reshaped, axis=0)
 
-    means = numpy.mean(reshaped, axis=0)
+        filename = pkg_resources.resource_filename("deepometry", os.path.join("data", self.name, "means.csv"))
 
-    with open(pkg_resources.resource_filename("deepometry", os.path.join("data", "means.csv")), "w") as csvfile:
-        writer = csv.writer(csvfile)
+        with open(filename, "w") as csvfile:
+            writer = csv.writer(csvfile)
 
-        writer.writerow(means)
+            writer.writerow(means)
 
-    return means
+        return means
 
+    def _means(self):
+        means = None
 
-def _center(x):
-    xc = x.reshape(-1, x.shape[-1])
+        filename = pkg_resources.resource_filename("deepometry", os.path.join("data", self.name, "means.csv"))
 
-    xc = xc - _means()
+        with open(filename, "r") as csvfile:
+            reader = csv.reader(csvfile)
 
-    return xc.reshape(x.shape)
+            for row in reader:
+                means = [float(mean) for mean in row]
 
+                break
 
-def _create_generator():
-    means = _means()
+        return means
 
-    generator_options = {
-        "height_shift_range": 0.5,
-        "horizontal_flip": True,
-        "preprocessing_function": lambda data: data - means,
-        "rotation_range": 180,
-        "vertical_flip": True,
-        "width_shift_range": 0.5
-    }
+    def _center(self, x):
+        xc = x.reshape(-1, x.shape[-1])
 
-    return deepometry.image.generator.ImageDataGenerator(
-        **generator_options
-    )
+        xc = xc - self._means()
 
+        return xc.reshape(x.shape)
 
-def _means():
-    means = None
+    def _create_generator(self):
+        means = self._means()
 
-    with open(pkg_resources.resource_filename("deepometry", os.path.join("data", "means.csv")), "r") as csvfile:
-        reader = csv.reader(csvfile)
+        generator_options = {
+            "height_shift_range": 0.5,
+            "horizontal_flip": True,
+            "preprocessing_function": lambda data: data - means,
+            "rotation_range": 180,
+            "vertical_flip": True,
+            "width_shift_range": 0.5
+        }
 
-        for row in reader:
-            means = [float(mean) for mean in row]
+        return deepometry.image.generator.ImageDataGenerator(
+            **generator_options
+        )
 
-            break
+    @staticmethod
+    def _split(x, y, validation_split=0.2):
+        split_index = int(len(x) * (1.0 - validation_split))
 
-    return means
+        indexes = numpy.random.permutation(len(x))
 
+        x_train = numpy.asarray([x[index] for index in indexes[:split_index]])
+        x_valid = numpy.asarray([x[index] for index in indexes[split_index:]])
 
-def _split(x, y, validation_split=0.2):
-    split_index = int(len(x) * (1.0 - validation_split))
+        y_train = numpy.asarray([y[index] for index in indexes[:split_index]])
+        y_valid = numpy.asarray([y[index] for index in indexes[split_index:]])
 
-    indexes = numpy.random.permutation(len(x))
-
-    x_train = numpy.asarray([x[index] for index in indexes[:split_index]])
-    x_valid = numpy.asarray([x[index] for index in indexes[split_index:]])
-
-    y_train = numpy.asarray([y[index] for index in indexes[:split_index]])
-    y_valid = numpy.asarray([y[index] for index in indexes[split_index:]])
-
-    return x_train, y_train, x_valid, y_valid
+        return x_train, y_train, x_valid, y_valid

@@ -12,20 +12,32 @@ import deepometry.model
 
 
 @pytest.fixture()
-def data_dir(tmpdir):
-    return tmpdir.mkdir("data")
+def resource_dir(tmpdir):
+    directory = tmpdir.mkdir("deepometry")
+
+    directory.mkdir("data")
+
+    return directory
 
 
-def test_init():
-    model = deepometry.model.Model(shape=(48, 48, 3), units=4)
+def test_init(resource_dir, mocker):
+    resources = mocker.patch("pkg_resources.resource_filename")
+    resources.side_effect = lambda _, filename: str(resource_dir.join(filename))
+
+    model = deepometry.model.Model(name="ResNet50", shape=(48, 48, 3), units=4)
+
+    assert model.name == "ResNet50"
 
     assert keras.backend.int_shape(model.model.input) == (None, 48, 48, 3)
 
     assert keras.backend.int_shape(model.model.output) == (None, 4)
 
 
-def test_compile():
-    model = deepometry.model.Model(shape=(48, 48, 3), units=4)
+def test_compile(resource_dir, mocker):
+    resources = mocker.patch("pkg_resources.resource_filename")
+    resources.side_effect = lambda _, filename: str(resource_dir.join(filename))
+
+    model = deepometry.model.Model(name="ResNet50", shape=(48, 48, 3), units=4)
     model.compile()
 
     assert model.model.loss == "categorical_crossentropy"
@@ -35,7 +47,7 @@ def test_compile():
     assert isinstance(model.model.optimizer, keras.optimizers.Adam)
 
 
-def test_fit(data_dir, mocker):
+def test_fit(resource_dir, mocker):
     numpy.random.seed(53)
 
     x = numpy.random.randint(256, size=(100, 48, 48, 3))
@@ -45,9 +57,9 @@ def test_fit(data_dir, mocker):
         keras_resnet.models.ResNet50.return_value = model_mock
 
         resources = mocker.patch("pkg_resources.resource_filename")
-        resources.side_effect = lambda _, filename: str(data_dir.join(os.path.basename(filename)))
+        resources.side_effect = lambda _, filename: str(resource_dir.join(filename))
 
-        model = deepometry.model.Model(shape=(48, 48, 3), units=4)
+        model = deepometry.model.Model(name="ResNet50", shape=(48, 48, 3), units=4)
         model.compile()
         model.fit(
             x,
@@ -70,6 +82,13 @@ def test_fit(data_dir, mocker):
 
         _, kwargs = model_mock.fit_generator.call_args
 
+        assert os.path.exists(
+            pkg_resources.resource_filename(
+                "deepometry",
+                os.path.join("data", model.name, "means.csv")
+            )
+        )
+
         # callbacks
         callbacks = kwargs["callbacks"]
         assert len(callbacks) == 4
@@ -77,7 +96,7 @@ def test_fit(data_dir, mocker):
         assert isinstance(callbacks[0], keras.callbacks.CSVLogger)
         assert callbacks[0].filename == pkg_resources.resource_filename(
             "deepometry",
-            os.path.join("data", "training.csv")
+            os.path.join("data", model.name, "training.csv")
         )
 
         assert isinstance(callbacks[1], keras.callbacks.EarlyStopping)
@@ -85,7 +104,7 @@ def test_fit(data_dir, mocker):
         assert isinstance(callbacks[2], keras.callbacks.ModelCheckpoint)
         assert callbacks[2].filepath == pkg_resources.resource_filename(
             "deepometry",
-            os.path.join("data", "checkpoint.hdf5")
+            os.path.join("data", model.name, "checkpoint.hdf5")
         )
 
         assert isinstance(callbacks[3], keras.callbacks.ReduceLROnPlateau)
@@ -137,11 +156,12 @@ def test_fit(data_dir, mocker):
         numpy.testing.assert_array_almost_equal(actual, expected, decimal=5)
 
 
-def test_evaluate(data_dir, mocker):
+def test_evaluate(resource_dir, mocker):
     x = numpy.random.randint(256, size=(100, 48, 48, 3)).astype(numpy.float64)
     y = numpy.random.randint(4, size=(100,))
 
-    meanscsv = str(data_dir.join("means.csv"))
+    resource_dir.mkdir(os.path.join("data", "ResNet50"))
+    meanscsv = str(resource_dir.join(os.path.join("data", "ResNet50", "means.csv")))
     with open(meanscsv, "w") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow([125.3, 127.12, 121.9])
@@ -157,9 +177,9 @@ def test_evaluate(data_dir, mocker):
         keras_resnet.models.ResNet50.return_value = model_mock
 
         resources = mocker.patch("pkg_resources.resource_filename")
-        resources.side_effect = lambda _, filename: str(data_dir.join(os.path.basename(filename)))
+        resources.side_effect = lambda _, filename: str(resource_dir.join(filename))
 
-        model = deepometry.model.Model(shape=(48, 48, 3), units=4)
+        model = deepometry.model.Model(name="ResNet50", shape=(48, 48, 3), units=4)
         model.compile()
         model.evaluate(
             x,
@@ -169,7 +189,7 @@ def test_evaluate(data_dir, mocker):
         )
 
         model_mock.load_weights.assert_called_once_with(
-            pkg_resources.resource_filename("deepometry", os.path.join("data", "checkpoint.hdf5"))
+            pkg_resources.resource_filename("deepometry", os.path.join("data", "ResNet50", "checkpoint.hdf5"))
         )
 
         model_mock.evaluate.assert_called_once_with(
